@@ -7,13 +7,20 @@ documentation:
     - title: Business Logic Users API
       content: A front end for mod-users, authn/credentials and auth/permissions
 
+resourceTypes:
+  - collection: !include ../raml-util/rtypes/collection.raml
+  - collection-item: !include ../raml-util/rtypes/item-collection.raml
+  - get-only: !include ../raml-util/rtypes/get-only.raml
+  - post-empty-body: !include ../raml-util/rtypes/post-empty-body.raml
+  
 #schemas:
 #    - compositeUser: !include schemas/compositeUser.json
 
 /users:
     /{username}:
-        get:
+        type:
+          get-only:
     /by-id:
         /{userid}:
-            get:
+            get-only:
 
