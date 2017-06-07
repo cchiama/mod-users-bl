@@ -76,6 +76,7 @@ public class UsersAPI implements UsersResource {
     }
 
     if(!isBetween(statusCode, 200, 300)){
+      statusCode = response.getError().getInteger("statusCode");
       if(statusCode == 404){
         asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
           GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
