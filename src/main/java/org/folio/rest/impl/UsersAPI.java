@@ -3,10 +3,9 @@ package org.folio.rest.impl;
 import java.util.List;
 import java.util.Map;
 
-import javax.ws.rs.core.Response;
-
 import org.folio.rest.jaxrs.resource.UsersResource;
 import org.folio.rest.tools.client.HttpModuleClient;
+import org.folio.rest.tools.client.Response;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
@@ -33,23 +32,23 @@ public class UsersAPI implements UsersResource {
 
 
   @Override
-  public void getUsers(String query, String orderBy, Order order, int offset, int limit,
-      List<String> include, Map<String, String> okapiHeaders,
-      Handler<AsyncResult<Response>> asyncResultHandler, Context vertxContext) throws Exception {
+  public void getUsersByUsernameByUsername(String username, List<String> include,
+      Map<String, String> okapiHeaders,
+      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
+      throws Exception {
     // TODO Auto-generated method stub
 
   }
 
-
   @Override
   public void getUsersByIdByUserid(String userid, List<String> include,
-      Map<String, String> okapiHeaders, Handler<AsyncResult<Response>> asyncResultHandler,
+      Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
 
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient client = new HttpModuleClient(okapiURL, tenant);
-    org.folio.rest.tools.client.Response response = client.request("/users/" + userid, okapiHeaders);
+    Response response = client.request("/users/" + userid, okapiHeaders);
     int statusCode = response.getCode();
     if(isBetween(statusCode, 200, 300)){
       //can use BuildCQL object to get value in json as well
@@ -69,7 +68,8 @@ public class UsersAPI implements UsersResource {
         } else {
           JsonObject record = result.getJsonArray(USERS_ENTRY).getJsonObject(0);
           logger.debug("Got record " + record.encode());
-          response = client.request("/authn/credentials/" + userName, okapiHeaders);
+          Response credResponse = client.request("/authn/credentials/" + userName, okapiHeaders);
+          Response permResponse = client.request("/perms/users/" + userName, okapiHeaders);
 
         }
       }
@@ -92,14 +92,17 @@ public class UsersAPI implements UsersResource {
 
   }
 
-  /* (non-Javadoc)
-   * @see org.folio.rest.jaxrs.resource.UsersResource#getUsersByUsernameByUsername(java.lang.String, java.util.List, java.util.Map, io.vertx.core.Handler, io.vertx.core.Context)
-   */
+
   @Override
-  public void getUsersByUsernameByUsername(String username, List<String> include,
-      Map<String, String> okapiHeaders, Handler<AsyncResult<Response>> asyncResultHandler,
-      Context vertxContext) throws Exception {
+  public void getUsers(String query, String orderBy, Order order, int offset, int limit,
+      List<String> include, Map<String, String> okapiHeaders,
+      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
+      throws Exception {
     // TODO Auto-generated method stub
 
   }
+
+
+
+
 }
