@@ -1,0 +1,93 @@
+#%RAML 0.8
+title: Mod-Users BL
+baseUri: http://github.com/org/folio/mod-users-bl
+
+documentation:
+    - title: Business Logic Users API
+      content: A front end for mod-users and mod-permissions
+
+schemas:
+    - compositeUser: !include ../../schemas/mod-users-bl/compositeUser.json
+    - compositeUserListObject: !include ../../schemas/mod-users-bl/compositeUserListObject.json
+    - ../mod-users/userdata.json: !include ../../schemas/mod-users/userdata.json
+    - ../mod-users/usergroup.json: !include ../../schemas/mod-users/usergroup.json
+    - ../mod-permissions/permissionUser.json: !include ../../schemas/mod-permissions/permissionUser.json
+    - ../mod-login/credentials.json: !include ../../schemas/mod-login/credentials.json
+
+traits:
+  - secured: !include ../../traits/auth.raml
+  - orderable: !include ../../traits/orderable.raml
+  - pageable: !include ../../traits/pageable.raml
+  - searchable: !include ../../traits/searchable.raml
+  - language: !include ../../traits/language.raml
+  - validate: !include ../../traits/validation.raml
+  - incl: !include ../../traits/includes.raml
+  
+resourceTypes:
+    - compositeUserResource:
+         get:
+            description: "Get a user by"
+            is: [
+                incl
+            ]
+            responses:
+                200:
+                    body:
+                        application/json:
+                            schema: compositeUser
+                400:
+                    description: "Bad request"
+                    body:
+                        text/plain:
+                            example: "Bad request"
+                403:
+                    description: "Access denied"
+                    body:
+                        text/plain:
+                            example: "Access denied"
+                404:
+                    description: "User not found"
+                    body:
+                        text/plain:
+                            example: "User not found"
+                500:
+                    description: "Internal server error"
+                    body:
+                        text/plain:
+                            example: "Internal server error"
+
+/users:
+    get:
+        description: Get a number of user (and possibly related) records based on criteria in the user and related modules
+        is: [
+            searchable: {description: "with valid searchable fields", example: "active=true"},
+            orderable: {fieldsList: "field A, field B"},
+            pageable,
+            incl
+        ]
+        responses:
+            200:
+                body:
+                    application/json:
+                        schema: compositeUserListObject
+            400:
+                description: "Bad request"
+                body:
+                    text/plain:
+                        example: "Bad request"
+            403:
+                description: "Access denied"
+                body:
+                    text/plain:
+                        example: "Access denied"
+            500:
+                description: "Internal server error"
+                body:
+                    text/plain:
+                        example: "Internal server error"
+    /by-id:
+        /{userid}:
+            type: { compositeUserResource: { "typeName" : "id" } }
+    /by-username:
+        /{username}:
+            type: { compositeUserResource: { "typeName" : "username"} }
