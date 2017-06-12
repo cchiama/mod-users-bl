@@ -144,48 +144,41 @@ public class UsersAPI implements UsersResource {
     return null;
   }
 
-  Consumer<Response> process(boolean isComplete, boolean addPreviousToMaster, String label,
-      JsonObject masterResponseObject, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
-    return (response) ->
-    {
-        System.out.println("y = " + response);
-        System.out.println("ex = " + response.getException());
-        int statusCode = response.getCode();
-        boolean ok = isBetween(statusCode, 200, 300);
-        System.out.println(masterResponseObject.encodePrettily());
-        if(!ok){
-          statusCode = response.getError().getInteger("statusCode");
-          if(statusCode == 404){
-            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-              GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
-          }
-          else if(statusCode == 400){
-            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-              GetUsersByIdByUseridResponse.withPlainBadRequest(response.getError().encodePrettily())));
-          }
-          else{
-            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-              GetUsersByIdByUseridResponse.withPlainInternalServerError(response.getError().encodePrettily())));
-          }
-        }
-        else if(ok && isComplete){
-          CompositeUser cu = new CompositeUser();
-          //Credentials creds = new Credentials();
-          //creds.
-          //cu.setCredentials(credResponse.getBody());
-          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-            GetUsersByIdByUseridResponse.withJsonOK(cu)));
-        }
-        else if(ok && addPreviousToMaster){
-          masterResponseObject.put(label, response.getBody());
-        }
+  Consumer<Response> handlePreviousResponse(Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+    return (response) -> {
+        handleError(response, asyncResultHandler);
     };
   }
 
-  private Response join(Response resp1, Response resp2){
-    return null;
+  private void handleError(Response response, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+    int statusCode = response.getCode();
+    boolean ok = isBetween(statusCode, 200, 300);
+    if(ok){
+        Integer totalRecords = response.getBody().getInteger("total_records");
+        if(totalRecords == null || totalRecords < 1) {
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainNotFound("No record found for query '" + response.getEndpoint() + "'")));
+        } else if(totalRecords > 1) {
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainBadRequest(("'" + response.getEndpoint() + "' returns multiple results"))));
+        }
+    }
+    else {
+      statusCode = response.getError().getInteger("statusCode");
+      if(statusCode == 404){
+        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+          GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
+      }
+      else if(statusCode == 400){
+        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+          GetUsersByIdByUseridResponse.withPlainBadRequest(response.getError().encodePrettily())));
+      }
+      else{
+        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+          GetUsersByIdByUseridResponse.withPlainInternalServerError(response.getError().encodePrettily())));
+      }
+    }
   }
-
 
   @Override
   public void getUsersByIdByUserid(String userid, List<String> include,
@@ -196,21 +189,68 @@ public class UsersAPI implements UsersResource {
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
 
-    JsonObject masterResponseObject = new JsonObject();
+    CompletableFuture<Response> userIdResponse = client.request("/users/" + userid, okapiHeaders);
 
-    CompletableFuture<Response> response = client.request("/users/" + userid, okapiHeaders);
-    CompletableFuture<Response> response2 = response.thenCompose(
+    //if previous request failed, chainedRequest will not be triggered//
+    CompletableFuture<Response> userResponse = userIdResponse.thenCompose(
       client.chainedRequest("/users?query=username={username}", okapiHeaders, null,
-        process(false, false, "users", masterResponseObject, asyncResultHandler)) ).thenCompose(
+        handlePreviousResponse(asyncResultHandler)) );
+
+    CompletableFuture<Response> credResponse = userResponse.thenCompose(
           client.chainedRequest("/authn/credentials/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-            process(false, true, "credentials",masterResponseObject, asyncResultHandler))
-            ).thenCompose(
-              client.chainedRequest("/perms/users/{username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-                process(true, true, "permissions", masterResponseObject, asyncResultHandler))
-                );
-    CompletableFuture<Response> response3 = client.request("/users/" + userid, okapiHeaders);
-    response3.thenCombine(response2, (resp1, resp2) -> join(resp1, resp2));
+            handlePreviousResponse(asyncResultHandler)));
+
+    CompletableFuture<Response> permResponse = userResponse.thenCompose(
+          client.chainedRequest("/perms/users/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+            handlePreviousResponse(asyncResultHandler)));
+
+    CompletableFuture<JsonObject> combinedResponse =
+      credResponse.thenCombine(permResponse, (resp1, resp2) -> combined(resp1, resp2));
+
+    CompletableFuture<Response> groupResponse = client.request("/groups", okapiHeaders);
+    groupResponse.handle((response, ex) -> {
+      handleError(response, asyncResultHandler);
+      return null;
+    });
+
+    CompletableFuture<JsonObject> joinedResponse =
+        userResponse.thenCombine(groupResponse, (resp1, resp2) -> {
+      try {
+        return join(resp1, resp2);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+      return null;
+    });
+
+    combinedResponse.thenCombine(joinedResponse, (resp1, resp2) -> merge(resp1, resp2, asyncResultHandler));
   }
+
+  private JsonObject merge(JsonObject resp1, JsonObject resp2,
+      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
+    resp1.put("users", resp2);
+    System.out.println(resp1);
+    CompositeUser cu = new CompositeUser();
+    //cu.setUser(user);
+    //Credentials creds = new Credentials();
+    //creds.
+    //cu.setCredentials(credResponse.getBody());
+    asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+      GetUsersByIdByUseridResponse.withJsonOK(cu)));
+    return resp1;
+  }
+
+  private JsonObject join(Response resp1, Response resp2) throws Exception {
+    return resp1.joinOn("patronGroup", resp2, "group", "patronGroupName").getBody();
+  }
+
+  private JsonObject combined(Response resp1, Response resp2) {
+    JsonObject masterResponseObject = new JsonObject();
+    masterResponseObject.put("credentials", resp1);
+    masterResponseObject.put("permissions", resp2);
+    return masterResponseObject;
+  }
+
 
 
   @Override
