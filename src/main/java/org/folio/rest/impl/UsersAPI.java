@@ -10,6 +10,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.folio.rest.jaxrs.model.CompositeUser;
+import org.folio.rest.jaxrs.model.User;
 import org.folio.rest.jaxrs.resource.UsersResource;
 import org.folio.rest.tools.client.BuildCQL;
 import org.folio.rest.tools.client.HttpModuleClient2;
@@ -205,7 +206,7 @@ public class UsersAPI implements UsersResource {
             handlePreviousResponse(asyncResultHandler)));
 
     CompletableFuture<JsonObject> combinedResponse =
-      credResponse.thenCombine(permResponse, (resp1, resp2) -> combined(resp1, resp2));
+      credResponse.thenCombine(permResponse, (resp1, resp2) -> combined(resp1, resp2, asyncResultHandler));
 
     CompletableFuture<Response> groupResponse = client.request("/groups", okapiHeaders);
     groupResponse.handle((response, ex) -> {
@@ -231,7 +232,9 @@ public class UsersAPI implements UsersResource {
     resp1.put("users", resp2);
     System.out.println(resp1);
     CompositeUser cu = new CompositeUser();
-    //cu.setUser(user);
+    User user = new User();
+    user.setBarcode("aaaaaaaa");
+    cu.setUser(user);
     //Credentials creds = new Credentials();
     //creds.
     //cu.setCredentials(credResponse.getBody());
@@ -244,10 +247,19 @@ public class UsersAPI implements UsersResource {
     return resp1.joinOn("patronGroup", resp2, "group", "patronGroupName").getBody();
   }
 
-  private JsonObject combined(Response resp1, Response resp2) {
+  private JsonObject combined(Response resp1, Response resp2,
+      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
     JsonObject masterResponseObject = new JsonObject();
-    masterResponseObject.put("credentials", resp1);
-    masterResponseObject.put("permissions", resp2);
+    if(!isBetween(resp1.getCode(), 200, 300)){
+      handleError(resp1, asyncResultHandler);
+    }
+    else if(!isBetween(resp2.getCode(), 200, 300)){
+      handleError(resp2, asyncResultHandler);
+    }
+    else{
+      masterResponseObject.put("credentials", resp1);
+      masterResponseObject.put("permissions", resp2);
+    }
     return masterResponseObject;
   }
 
