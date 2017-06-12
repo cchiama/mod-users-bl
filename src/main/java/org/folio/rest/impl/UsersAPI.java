@@ -145,16 +145,16 @@ public class UsersAPI implements UsersResource {
     return null;
   }
 
-  Consumer<Response> handlePreviousResponse(Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+  Consumer<Response> handlePreviousResponse(boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
     return (response) -> {
-        handleError(response, asyncResultHandler);
+        handleError(response, isSingleResult, asyncResultHandler);
     };
   }
 
-  private void handleError(Response response, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+  private void handleError(Response response, boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
     int statusCode = response.getCode();
     boolean ok = isBetween(statusCode, 200, 300);
-    if(ok){
+    if(ok && !isSingleResult){
         Integer totalRecords = response.getBody().getInteger("total_records");
         if(totalRecords == null || totalRecords < 1) {
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
@@ -186,34 +186,49 @@ public class UsersAPI implements UsersResource {
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
 
+    boolean []responseSent = new boolean[]{false};
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
 
+    //make a call to /users/id and get back a cf to access results when ready
     CompletableFuture<Response> userIdResponse = client.request("/users/" + userid, okapiHeaders);
 
-    //if previous request failed, chainedRequest will not be triggered//
+    //calling thenCompose on the userId cf will wait for the /users/id call to complete
+    //and once complete the Response object will be passed in as a parameter to the function within the
+    //thenCompose - in this case chainedRequest - which is different then a regular request in that it
+    //(1) receives the Response from the previous (2) can populate the request url with values from the
+    //returned response json. (3) receive a callback which is called on the passed in response to make
+    //sure it is a valid response and that it is ok to continue with the actual request
+    //NOTE: if the previous request failed (the Response error or exception objects are populated
+    //the chained http request will not be triggered
     CompletableFuture<Response> userResponse = userIdResponse.thenCompose(
       client.chainedRequest("/users?query=username={username}", okapiHeaders, null,
-        handlePreviousResponse(asyncResultHandler)) );
+        handlePreviousResponse(true, asyncResultHandler)) );
 
+    //call credentials once the /users?query=username={username} completes
     CompletableFuture<Response> credResponse = userResponse.thenCompose(
           client.chainedRequest("/authn/credentials/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-            handlePreviousResponse(asyncResultHandler)));
+            handlePreviousResponse(false, asyncResultHandler)));
 
+    //call perms once the /users?query=username={username} (same as creds) completes
     CompletableFuture<Response> permResponse = userResponse.thenCompose(
           client.chainedRequest("/perms/users/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-            handlePreviousResponse(asyncResultHandler)));
+            handlePreviousResponse(false, asyncResultHandler)));
 
+    //combine the cred response with the perm response (see combined() function)
+    //break if error occurs
     CompletableFuture<JsonObject> combinedResponse =
       credResponse.thenCombine(permResponse, (resp1, resp2) -> combined(resp1, resp2, asyncResultHandler));
 
+    //get /groups, handle error if occurs - no dependency on any other http request (unlike
+    ///creds , /perms , etc.. so this will get called at almost the same time as /users/id
     CompletableFuture<Response> groupResponse = client.request("/groups", okapiHeaders);
-    groupResponse.handle((response, ex) -> {
-      handleError(response, asyncResultHandler);
-      return null;
+    groupResponse.thenAccept((response) -> {
+      handleError(response, false, asyncResultHandler);
     });
 
+    //join the /groups and /users results - rmb join functionality
     CompletableFuture<JsonObject> joinedResponse =
         userResponse.thenCombine(groupResponse, (resp1, resp2) -> {
       try {
@@ -224,11 +239,12 @@ public class UsersAPI implements UsersResource {
       return null;
     });
 
-    combinedResponse.thenCombine(joinedResponse, (resp1, resp2) -> merge(resp1, resp2, asyncResultHandler));
+    //merge the joined user with the combined perms + creds
+    combinedResponse.thenCombine(joinedResponse, (resp1, resp2) -> merge(resp1, resp2, client, asyncResultHandler));
   }
 
   private JsonObject merge(JsonObject resp1, JsonObject resp2,
-      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
+      HttpModuleClient2 client, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
     resp1.put("users", resp2);
     System.out.println(resp1);
     CompositeUser cu = new CompositeUser();
@@ -238,6 +254,7 @@ public class UsersAPI implements UsersResource {
     //Credentials creds = new Credentials();
     //creds.
     //cu.setCredentials(credResponse.getBody());
+    client.closeClient();
     asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
       GetUsersByIdByUseridResponse.withJsonOK(cu)));
     return resp1;
@@ -251,10 +268,10 @@ public class UsersAPI implements UsersResource {
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
     JsonObject masterResponseObject = new JsonObject();
     if(!isBetween(resp1.getCode(), 200, 300)){
-      handleError(resp1, asyncResultHandler);
+      handleError(resp1, false, asyncResultHandler);
     }
     else if(!isBetween(resp2.getCode(), 200, 300)){
-      handleError(resp2, asyncResultHandler);
+      handleError(resp2, false, asyncResultHandler);
     }
     else{
       masterResponseObject.put("credentials", resp1);
