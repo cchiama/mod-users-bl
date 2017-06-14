@@ -15,9 +15,6 @@ import org.folio.rest.jaxrs.resource.UsersResource;
 import org.folio.rest.tools.client.BuildCQL;
 import org.folio.rest.tools.client.HttpModuleClient2;
 import org.folio.rest.tools.client.Response;
-import org.folio.rest.tools.utils.ObjectMapperTool;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
@@ -34,7 +31,6 @@ public class UsersAPI implements UsersResource {
   private static String OKAPI_URL_HEADER = "X-Okapi-URL";
   private static String OKAPI_TENANT_HEADER = "X-Okapi-Tenant";
   private static String USERS_ENTRY = "users";
-  private static final ObjectMapper MAPPER = ObjectMapperTool.getMapper();
   private final Logger logger = LoggerFactory.getLogger(UsersAPI.class);
 
   @Override
@@ -112,7 +108,7 @@ public class UsersAPI implements UsersResource {
       if(include.get(i).equals("credentials")){
         //call credentials once the /users?query=username={username} completes
         CompletableFuture<Response> credResponse = userIdResponse.thenCompose(
-              client.chainedRequest("/authn/credentials/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+              client.chainedRequest("/authn/credentials/{username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = credResponse;
         completedLookup.put("credentials", credResponse);
@@ -120,7 +116,7 @@ public class UsersAPI implements UsersResource {
       else if(include.get(i).equals("perms")){
         //call perms once the /users?query=username={username} (same as creds) completes
         CompletableFuture<Response> permResponse = userIdResponse.thenCompose(
-              client.chainedRequest("/perms/users/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+              client.chainedRequest("/perms/users/{username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = permResponse;
         completedLookup.put("perms", permResponse);
@@ -143,26 +139,26 @@ public class UsersAPI implements UsersResource {
       .thenAccept((response) -> {
         try {
           CompositeUser cu = new CompositeUser();
-          cu.setUser((User)userIdResponse.get().convertToPojo(MAPPER, User.class));
+          cu.setUser((User)userIdResponse.get().convertToPojo(User.class));
           CompletableFuture<Response> cf = completedLookup.get("credentials");
           if(cf != null){
-            cu.setCredentials((Credentials)cf.get().convertToPojo(MAPPER, Credentials.class) );
+            cu.setCredentials((Credentials)cf.get().convertToPojo(Credentials.class) );
           }
           cf = completedLookup.get("perms");
           if(cf != null){
-            cu.setPermissions((Permissions)cf.get().convertToPojo(MAPPER, Permissions.class) );
+            cu.setPermissions((Permissions)cf.get().convertToPojo(Permissions.class) );
           }
           cf = completedLookup.get("groups");
           if(cf != null){
-            cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(MAPPER, PatronGroup.class) );
+            cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
           }
           client.closeClient();
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
             GetUsersByIdByUseridResponse.withJsonOK(cu)));
-        } catch (InterruptedException e) {
-          e.printStackTrace();
         } catch (Exception e) {
-          e.printStackTrace();
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainInternalServerError(e.getLocalizedMessage())));
+          logger.error(e.getMessage(), e);
         }
       });
   }
