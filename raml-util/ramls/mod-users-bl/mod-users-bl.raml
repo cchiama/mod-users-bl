@@ -88,6 +88,8 @@ resourceTypes:
     /by-id:
         /{userid}:
             type: { compositeUserResource: { "typeName" : "id" } }
+            is: [incl]
     /by-username:
         /{username}:
             type: { compositeUserResource: { "typeName" : "username"} }
+            is: [incl]

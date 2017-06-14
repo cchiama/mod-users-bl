@@ -27,6 +27,9 @@
     "meta": {
       "type": "object"
     },
+    "metaData": {
+      "type": "object"
+    },
     "personal": {
       "type": "object",
       "properties": {
