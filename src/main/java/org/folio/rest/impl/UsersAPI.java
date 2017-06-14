@@ -1,26 +1,27 @@
 package org.folio.rest.impl;
 
-import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.folio.rest.jaxrs.model.CompositeUser;
+import org.folio.rest.jaxrs.model.Credentials;
+import org.folio.rest.jaxrs.model.PatronGroup;
+import org.folio.rest.jaxrs.model.Permissions;
 import org.folio.rest.jaxrs.model.User;
 import org.folio.rest.jaxrs.resource.UsersResource;
 import org.folio.rest.tools.client.BuildCQL;
 import org.folio.rest.tools.client.HttpModuleClient2;
 import org.folio.rest.tools.client.Response;
-import org.folio.rest.tools.parser.JsonPathParser;
+import org.folio.rest.tools.utils.ObjectMapperTool;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Handler;
-import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 
@@ -33,13 +34,8 @@ public class UsersAPI implements UsersResource {
   private static String OKAPI_URL_HEADER = "X-Okapi-URL";
   private static String OKAPI_TENANT_HEADER = "X-Okapi-Tenant";
   private static String USERS_ENTRY = "users";
-
+  private static final ObjectMapper MAPPER = ObjectMapperTool.getMapper();
   private final Logger logger = LoggerFactory.getLogger(UsersAPI.class);
-
-  private boolean isBetween(int x, int min, int max) {
-      return x>=min && x<=max;
-  }
-
 
   @Override
   public void getUsersByUsernameByUsername(String username, List<String> include,
@@ -48,101 +44,6 @@ public class UsersAPI implements UsersResource {
       throws Exception {
     // TODO Auto-generated method stub
 
-  }
-/*
-  BiFunction<Response, Throwable, Void> getit(){
-    try {
-      return (resp, ex) -> {
-        resp.getBody();
-        return null;
-      };
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
-    return null;
-  }*/
-
-  private static final Pattern TAG_REGEX = Pattern.compile("\\{(.+?)\\}");
-
-  private static List<String> getTagValues(final String str) {
-      final List<String> tagValues = new ArrayList<>();
-      final Matcher matcher = TAG_REGEX.matcher(str);
-      while (matcher.find()) {
-          tagValues.add(matcher.group(1));
-      }
-      return tagValues;
-  }
-
-  Function<Response, CompletableFuture<Response>> getit(HttpModuleClient2 client,
-      String urlTempate, Map<String, String> headers, BuildCQL cql, Consumer<Response> c){
-    try {
-      List<String> replace = getTagValues(urlTempate);
-      return (resp) -> {
-        try {
-          int size = replace.size();
-          String newURL = null;
-          if(size > 0){
-            System.out.println(replace + " replace <--------------------");
-            JsonPathParser jpp = new JsonPathParser(resp.getBody());
-            for (int i = 0; i < size; i++) {
-              System.out.println(replace.get(i) + " replace <--------------------");
-
-              String val = (String)jpp.getValueAt(replace.get(i));
-              newURL = urlTempate.replaceAll("\\{"+replace.get(i)+"\\}", val);
-              System.out.println(newURL + " newURL <--------------------");
-
-            }
-          }
-          return client.request(newURL, headers);
-        } catch (Exception e) {
-          e.printStackTrace();
-        }
-        return null;
-      };
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
-    return null;
-  }
-
-  Function<Response, Response> getit2(HttpModuleClient2 client,
-      String urlTempate, Map<String, String> headers){
-    try {
-      List<String> replace = getTagValues(urlTempate);
-      return (resp) -> {
-        try {
-          int size = replace.size();
-          String newURL = null;
-          if(size > 0){
-            JsonPathParser jpp = new JsonPathParser(resp.getBody());
-            for (int i = 0; i < size; i++) {
-              String val = (String)jpp.getValueAt(replace.get(i));
-              newURL = urlTempate.replaceAll("\\{"+replace.get(i)+"\\}", val);
-            }
-          }
-          System.out.println("DONE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-          return client.request(newURL, headers).get();
-        } catch (Exception e) {
-          e.printStackTrace();
-        }
-        return null;
-      };
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
-    return null;
-  }
-
-  Function<Response, Response> getit3(){
-    try {
-      return (resp) -> {
-        resp.getBody();
-        return resp;
-      };
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
-    return null;
   }
 
   Consumer<Response> handlePreviousResponse(boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
@@ -153,7 +54,7 @@ public class UsersAPI implements UsersResource {
 
   private void handleError(Response response, boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
     int statusCode = response.getCode();
-    boolean ok = isBetween(statusCode, 200, 300);
+    boolean ok = Response.isSuccess(statusCode);
     if(ok && !isSingleResult){
         Integer totalRecords = response.getBody().getInteger("total_records");
         if(totalRecords == null || totalRecords < 1) {
@@ -164,7 +65,7 @@ public class UsersAPI implements UsersResource {
             GetUsersByIdByUseridResponse.withPlainBadRequest(("'" + response.getEndpoint() + "' returns multiple results"))));
         }
     }
-    else {
+    else if(!ok){
       statusCode = response.getError().getInteger("statusCode");
       if(statusCode == 404){
         asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
@@ -186,7 +87,7 @@ public class UsersAPI implements UsersResource {
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
 
-    boolean []responseSent = new boolean[]{false};
+    boolean []aRequestHasFailed = new boolean[]{false};
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
@@ -202,85 +103,69 @@ public class UsersAPI implements UsersResource {
     //sure it is a valid response and that it is ok to continue with the actual request
     //NOTE: if the previous request failed (the Response error or exception objects are populated
     //the chained http request will not be triggered
-    CompletableFuture<Response> userResponse = userIdResponse.thenCompose(
-      client.chainedRequest("/users?query=username={username}", okapiHeaders, null,
-        handlePreviousResponse(true, asyncResultHandler)) );
+    int includeCount = include.size();
+    CompletableFuture<Response> []requestedIncludes = new CompletableFuture[includeCount+1];
+    Map<String, CompletableFuture<Response>> completedLookup = new HashMap<>();
 
-    //call credentials once the /users?query=username={username} completes
-    CompletableFuture<Response> credResponse = userResponse.thenCompose(
-          client.chainedRequest("/authn/credentials/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-            handlePreviousResponse(false, asyncResultHandler)));
+    for (int i = 0; i < includeCount; i++) {
 
-    //call perms once the /users?query=username={username} (same as creds) completes
-    CompletableFuture<Response> permResponse = userResponse.thenCompose(
-          client.chainedRequest("/perms/users/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
-            handlePreviousResponse(false, asyncResultHandler)));
-
-    //combine the cred response with the perm response (see combined() function)
-    //break if error occurs
-    CompletableFuture<JsonObject> combinedResponse =
-      credResponse.thenCombine(permResponse, (resp1, resp2) -> combined(resp1, resp2, asyncResultHandler));
-
-    //get /groups, handle error if occurs - no dependency on any other http request (unlike
-    ///creds , /perms , etc.. so this will get called at almost the same time as /users/id
-    CompletableFuture<Response> groupResponse = client.request("/groups", okapiHeaders);
-    groupResponse.thenAccept((response) -> {
-      handleError(response, false, asyncResultHandler);
-    });
-
-    //join the /groups and /users results - rmb join functionality
-    CompletableFuture<JsonObject> joinedResponse =
-        userResponse.thenCombine(groupResponse, (resp1, resp2) -> {
-      try {
-        return join(resp1, resp2);
-      } catch (Exception e) {
-        e.printStackTrace();
+      if(include.get(i).equals("credentials")){
+        //call credentials once the /users?query=username={username} completes
+        CompletableFuture<Response> credResponse = userIdResponse.thenCompose(
+              client.chainedRequest("/authn/credentials/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+                handlePreviousResponse(true, asyncResultHandler)));
+        requestedIncludes[i] = credResponse;
+        completedLookup.put("credentials", credResponse);
       }
-      return null;
-    });
-
-    //merge the joined user with the combined perms + creds
-    combinedResponse.thenCombine(joinedResponse, (resp1, resp2) -> merge(resp1, resp2, client, asyncResultHandler));
-  }
-
-  private JsonObject merge(JsonObject resp1, JsonObject resp2,
-      HttpModuleClient2 client, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
-    resp1.put("users", resp2);
-    System.out.println(resp1);
-    CompositeUser cu = new CompositeUser();
-    User user = new User();
-    user.setBarcode("aaaaaaaa");
-    cu.setUser(user);
-    //Credentials creds = new Credentials();
-    //creds.
-    //cu.setCredentials(credResponse.getBody());
-    client.closeClient();
-    asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-      GetUsersByIdByUseridResponse.withJsonOK(cu)));
-    return resp1;
-  }
-
-  private JsonObject join(Response resp1, Response resp2) throws Exception {
-    return resp1.joinOn("patronGroup", resp2, "group", "patronGroupName").getBody();
-  }
-
-  private JsonObject combined(Response resp1, Response resp2,
-      Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler) {
-    JsonObject masterResponseObject = new JsonObject();
-    if(!isBetween(resp1.getCode(), 200, 300)){
-      handleError(resp1, false, asyncResultHandler);
+      else if(include.get(i).equals("perms")){
+        //call perms once the /users?query=username={username} (same as creds) completes
+        CompletableFuture<Response> permResponse = userIdResponse.thenCompose(
+              client.chainedRequest("/perms/users/{users[0].username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+                handlePreviousResponse(true, asyncResultHandler)));
+        requestedIncludes[i] = permResponse;
+        completedLookup.put("perms", permResponse);
+      }
+      else if(include.get(i).equals("groups")){
+        CompletableFuture<Response> groupResponse = userIdResponse.thenCompose(
+          client.chainedRequest("/groups/{patronGroup}", okapiHeaders, null,
+            handlePreviousResponse(true, asyncResultHandler)));
+        requestedIncludes[i] = groupResponse;
+        completedLookup.put("groups", groupResponse);
+      }
     }
-    else if(!isBetween(resp2.getCode(), 200, 300)){
-      handleError(resp2, false, asyncResultHandler);
-    }
-    else{
-      masterResponseObject.put("credentials", resp1);
-      masterResponseObject.put("permissions", resp2);
-    }
-    return masterResponseObject;
+    requestedIncludes[includeCount] = userIdResponse;
+    //INCLUDES INDICATE WHICH HTTP REQUESTS TO MAKE AND THEN MERGE INTO COMPOSITE OBJECT
+    //NO MORE IDS IN COMPOSITE OBJECT
+    //IF ONE REQUEST FAILS, FAIL REQUEST WITH ERROR OF FIRST FAILURE
+    //need to be able to run on two resp and populate two fields in the composite
+
+    CompletableFuture.allOf(requestedIncludes)
+      .thenAccept((response) -> {
+        try {
+          CompositeUser cu = new CompositeUser();
+          cu.setUser((User)userIdResponse.get().convertToPojo(MAPPER, User.class));
+          CompletableFuture<Response> cf = completedLookup.get("credentials");
+          if(cf != null){
+            cu.setCredentials((Credentials)cf.get().convertToPojo(MAPPER, Credentials.class) );
+          }
+          cf = completedLookup.get("perms");
+          if(cf != null){
+            cu.setPermissions((Permissions)cf.get().convertToPojo(MAPPER, Permissions.class) );
+          }
+          cf = completedLookup.get("groups");
+          if(cf != null){
+            cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(MAPPER, PatronGroup.class) );
+          }
+          client.closeClient();
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withJsonOK(cu)));
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        } catch (Exception e) {
+          e.printStackTrace();
+        }
+      });
   }
-
-
 
   @Override
   public void getUsers(String query, String orderBy, Order order, int offset, int limit,
@@ -290,8 +175,5 @@ public class UsersAPI implements UsersResource {
     // TODO Auto-generated method stub
 
   }
-
-
-
 
 }
