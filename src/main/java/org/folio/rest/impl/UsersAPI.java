@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import org.folio.rest.jaxrs.model.CompositeUser;
@@ -38,7 +39,8 @@ public class UsersAPI implements UsersResource {
       Map<String, String> okapiHeaders,
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
-    // TODO Auto-generated method stub
+
+    run(null, username, include, okapiHeaders, asyncResultHandler, vertxContext);
 
   }
 
@@ -62,7 +64,14 @@ public class UsersAPI implements UsersResource {
         }
     }
     else if(!ok){
-      statusCode = response.getError().getInteger("statusCode");
+      String message = "";
+      if(response.getError() != null){
+        statusCode = response.getError().getInteger("statusCode");
+        message = response.getError().encodePrettily();
+      }
+      else{
+        message = response.getException().getLocalizedMessage();
+      }
       if(statusCode == 404){
         asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
           GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
@@ -73,7 +82,7 @@ public class UsersAPI implements UsersResource {
       }
       else{
         asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-          GetUsersByIdByUseridResponse.withPlainInternalServerError(response.getError().encodePrettily())));
+          GetUsersByIdByUseridResponse.withPlainInternalServerError(message)));
       }
     }
   }
@@ -82,23 +91,36 @@ public class UsersAPI implements UsersResource {
   public void getUsersByIdByUserid(String userid, List<String> include,
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
+    run(userid, null, include, okapiHeaders, asyncResultHandler, vertxContext);
+  }
 
+  private void run(String userid, String username, List<String> include,
+      Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
+      Context vertxContext) throws Exception {
+
+    //TODO!!!!!!!! request fails, is returned, stop processing...
     boolean []aRequestHasFailed = new boolean[]{false};
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
 
-    //make a call to /users/id and get back a cf to access results when ready
-    CompletableFuture<Response> userIdResponse = client.request("/users/" + userid, okapiHeaders);
+    CompletableFuture<Response> []userIdResponse = new CompletableFuture[1];
+    String userTemplate = "";
+    String groupTemplate = "";
+    String mode[] = new String[1];
+    if(userid != null) {
+      userIdResponse[0] = client.request("/users/" + userid, okapiHeaders);
+      userTemplate = "{username}";
+      groupTemplate = "{patronGroup}";
+      mode[0] = "id";
+    }
+    else if(username != null){
+      userIdResponse[0] = client.request("/users?query=username=" + username, okapiHeaders);
+      userTemplate = "{users[0].username}";
+      groupTemplate = "{users[0].patronGroup}";
+      mode[0] = "username";
+    }
 
-    //calling thenCompose on the userId cf will wait for the /users/id call to complete
-    //and once complete the Response object will be passed in as a parameter to the function within the
-    //thenCompose - in this case chainedRequest - which is different then a regular request in that it
-    //(1) receives the Response from the previous (2) can populate the request url with values from the
-    //returned response json. (3) receive a callback which is called on the passed in response to make
-    //sure it is a valid response and that it is ok to continue with the actual request
-    //NOTE: if the previous request failed (the Response error or exception objects are populated
-    //the chained http request will not be triggered
     int includeCount = include.size();
     CompletableFuture<Response> []requestedIncludes = new CompletableFuture[includeCount+1];
     Map<String, CompletableFuture<Response>> completedLookup = new HashMap<>();
@@ -107,60 +129,94 @@ public class UsersAPI implements UsersResource {
 
       if(include.get(i).equals("credentials")){
         //call credentials once the /users?query=username={username} completes
-        CompletableFuture<Response> credResponse = userIdResponse.thenCompose(
-              client.chainedRequest("/authn/credentials/{username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+        CompletableFuture<Response> credResponse = userIdResponse[0].thenCompose(
+              client.chainedRequest("/authn/credentials/"+userTemplate, okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = credResponse;
         completedLookup.put("credentials", credResponse);
       }
       else if(include.get(i).equals("perms")){
         //call perms once the /users?query=username={username} (same as creds) completes
-        CompletableFuture<Response> permResponse = userIdResponse.thenCompose(
-              client.chainedRequest("/perms/users/{username}", okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+        CompletableFuture<Response> permResponse = userIdResponse[0].thenCompose(
+              client.chainedRequest("/perms/users/"+userTemplate, okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = permResponse;
         completedLookup.put("perms", permResponse);
       }
       else if(include.get(i).equals("groups")){
-        CompletableFuture<Response> groupResponse = userIdResponse.thenCompose(
-          client.chainedRequest("/groups/{patronGroup}", okapiHeaders, null,
+        CompletableFuture<Response> groupResponse = userIdResponse[0].thenCompose(
+          client.chainedRequest("/groups/"+groupTemplate, okapiHeaders, null,
             handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = groupResponse;
         completedLookup.put("groups", groupResponse);
       }
     }
-    requestedIncludes[includeCount] = userIdResponse;
-    //INCLUDES INDICATE WHICH HTTP REQUESTS TO MAKE AND THEN MERGE INTO COMPOSITE OBJECT
-    //NO MORE IDS IN COMPOSITE OBJECT
-    //IF ONE REQUEST FAILS, FAIL REQUEST WITH ERROR OF FIRST FAILURE
-    //need to be able to run on two resp and populate two fields in the composite
-
+    requestedIncludes[includeCount] = userIdResponse[0];
     CompletableFuture.allOf(requestedIncludes)
-      .thenAccept((response) -> {
-        try {
-          CompositeUser cu = new CompositeUser();
-          cu.setUser((User)userIdResponse.get().convertToPojo(User.class));
-          CompletableFuture<Response> cf = completedLookup.get("credentials");
-          if(cf != null){
-            cu.setCredentials((Credentials)cf.get().convertToPojo(Credentials.class) );
-          }
-          cf = completedLookup.get("perms");
-          if(cf != null){
-            cu.setPermissions((Permissions)cf.get().convertToPojo(Permissions.class) );
-          }
-          cf = completedLookup.get("groups");
-          if(cf != null){
-            cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
-          }
-          client.closeClient();
+    .thenAccept((response) -> {
+      try {
+        CompositeUser cu = null;
+        if(mode[0].equals("id")){
+          cu = processIdRes(requestedIncludes, completedLookup, userIdResponse);
+        }
+        else if(mode[0].equals("username")){
+          cu = processUserNameRes(requestedIncludes, completedLookup, userIdResponse);
+        }
+        CompletableFuture<Response> cf = completedLookup.get("groups");
+        if(cf != null){
+          cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
+        }
+        client.closeClient();
+        if(mode[0].equals("id")){
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
             GetUsersByIdByUseridResponse.withJsonOK(cu)));
-        } catch (Exception e) {
+        }else if(mode[0].equals("username")){
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByUsernameByUsernameResponse.withJsonOK(cu)));
+        }
+      } catch (Exception e) {
+        if(mode[0].equals("id")){
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
             GetUsersByIdByUseridResponse.withPlainInternalServerError(e.getLocalizedMessage())));
-          logger.error(e.getMessage(), e);
+        }else if(mode[0].equals("username")){
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByUsernameByUsernameResponse.withPlainInternalServerError(e.getLocalizedMessage())));
         }
-      });
+        logger.error(e.getMessage(), e);
+      }
+    });
+  }
+
+  private CompositeUser processIdRes(CompletableFuture<Response>[] requestedIncludes,
+      Map<String, CompletableFuture<Response>> completedLookup, CompletableFuture<Response> []userIdResponse)
+          throws InterruptedException, ExecutionException, Exception{
+    CompositeUser cu = new CompositeUser();
+    cu.setUser((User)userIdResponse[0].get().convertToPojo(User.class));
+    CompletableFuture<Response> cf = completedLookup.get("credentials");
+    if(cf != null){
+      cu.setCredentials((Credentials)cf.get().convertToPojo(Credentials.class) );
+    }
+    cf = completedLookup.get("perms");
+    if(cf != null){
+      cu.setPermissions((Permissions)cf.get().convertToPojo(Permissions.class) );
+    }
+    return cu;
+  }
+
+  private CompositeUser processUserNameRes(CompletableFuture<Response>[] requestedIncludes,
+      Map<String, CompletableFuture<Response>> completedLookup, CompletableFuture<Response> []userIdResponse)
+          throws InterruptedException, ExecutionException, Exception{
+    CompositeUser cu = new CompositeUser();
+    cu.setUser((User)Response.convertToPojo(userIdResponse[0].get().getBody().getJsonArray("users").getJsonObject(0), User.class));
+    CompletableFuture<Response> cf = completedLookup.get("credentials");
+    if(cf != null){
+      cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody().getJsonArray("credentials").getJsonObject(0), Credentials.class));
+    }
+    cf = completedLookup.get("perms");
+    if(cf != null){
+      cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody().getJsonArray("permissions").getJsonObject(0), Permissions.class));
+    }
+    return cu;
   }
 
   @Override
