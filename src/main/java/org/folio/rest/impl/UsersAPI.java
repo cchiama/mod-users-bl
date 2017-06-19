@@ -280,7 +280,7 @@ public class UsersAPI implements UsersResource {
         Response composite = new Response();
         //map an array of users returned by /users into an array of compositeUser objects - "compositeUser": []
         //name each object in the array "users" -  "compositeUser": [ { "users": { ...
-        composite.mapFrom(userResponse, "users[*]", "compositeUser", null, true);
+        composite.mapFrom(userResponse, "users[*]", "compositeUser", "users", true);
         //join into the compositeUser array groups joining on id and patronGroup field values. assume only one group per user
         //hence the usergroup[0] field to push into ../../groups otherwise (if many) leave out the [0] and pass in "usergroups"
         composite.joinOn("compositeUser[*].users.patronGroup", groupResponse, "usergroups[*].id", "usergroups[0]", "../../groups", false);
