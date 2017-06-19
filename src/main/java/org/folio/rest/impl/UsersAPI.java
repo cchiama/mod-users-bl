@@ -131,7 +131,7 @@ public class UsersAPI implements UsersResource {
       if(include.get(i).equals("credentials")){
         //call credentials once the /users?query=username={username} completes
         CompletableFuture<Response> credResponse = userIdResponse[0].thenCompose(
-              client.chainedRequest("/authn/credentials/"+userTemplate, okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+              client.chainedRequest("/authn/credentials/"+userTemplate, okapiHeaders, null,
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = credResponse;
         completedLookup.put("credentials", credResponse);
@@ -139,7 +139,7 @@ public class UsersAPI implements UsersResource {
       else if(include.get(i).equals("perms")){
         //call perms once the /users?query=username={username} (same as creds) completes
         CompletableFuture<Response> permResponse = userIdResponse[0].thenCompose(
-              client.chainedRequest("/perms/users/"+userTemplate, okapiHeaders, new BuildCQL(null, "users[*].username", "cuser"),
+              client.chainedRequest("/perms/users/"+userTemplate, okapiHeaders, null,
                 handlePreviousResponse(true, asyncResultHandler)));
         requestedIncludes[i] = permResponse;
         completedLookup.put("perms", permResponse);
