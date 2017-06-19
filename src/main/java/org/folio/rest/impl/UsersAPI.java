@@ -226,14 +226,12 @@ public class UsersAPI implements UsersResource {
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
 
-    //call users with cql
     boolean []aRequestHasFailed = new boolean[]{false};
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
 
     CompletableFuture<Response> []userIdResponse = new CompletableFuture[1];
-    String mode[] = new String[1];
     userIdResponse[0] = client.request("/users?"+query, okapiHeaders);
 
     int includeCount = include.size();
@@ -272,11 +270,23 @@ public class UsersAPI implements UsersResource {
       try {
         CompositeUserListObject cu = new CompositeUserListObject();
         Response userResponse = userIdResponse[0].get();
+        Response groupResponse = null;
+        Response credsResponse = null;
+        Response permsResponse = null;
         CompletableFuture<Response> cf = completedLookup.get("groups");
-        //if(cf != null){
-          Response groupResponse = cf.get();
-        //}
+        if(cf != null){
+          groupResponse = cf.get();
+        }
+        cf = completedLookup.get("credentials");
+        if(cf != null){
+          credsResponse = cf.get();
+        }
+        cf = completedLookup.get("perms");
+        if(cf != null){
+          permsResponse = cf.get();
+        }
         client.closeClient();
+
         Response composite = new Response();
         //map an array of users returned by /users into an array of compositeUser objects - "compositeUser": []
         //name each object in the array "users" -  "compositeUser": [ { "users": { ...
@@ -284,6 +294,11 @@ public class UsersAPI implements UsersResource {
         //join into the compositeUser array groups joining on id and patronGroup field values. assume only one group per user
         //hence the usergroup[0] field to push into ../../groups otherwise (if many) leave out the [0] and pass in "usergroups"
         composite.joinOn("compositeUser[*].users.patronGroup", groupResponse, "usergroups[*].id", "usergroups[0]", "../../groups", false);
+
+        composite.joinOn("compositeUser[*].users.username", credsResponse, "credentials[*].username", "credentials", "../../credentials", false);
+
+        composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionUsers[*].username", "permissionUsers", "../../permissions", false);
+
         @SuppressWarnings("unchecked")
         List<CompositeUser> cuol = (List<CompositeUser>)Response.convertToPojo(composite.getBody().getJsonArray("compositeUser"), CompositeUser.class);
         cu.setCompositeUsers(cuol);
