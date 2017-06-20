@@ -1,10 +1,10 @@
 package org.folio.rest.impl;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import org.folio.rest.jaxrs.model.CompositeUser;
@@ -21,6 +21,7 @@ import org.folio.rest.tools.client.Response;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Handler;
+import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 
@@ -32,7 +33,6 @@ public class UsersAPI implements UsersResource {
 
   private static String OKAPI_URL_HEADER = "X-Okapi-URL";
   private static String OKAPI_TENANT_HEADER = "X-Okapi-Tenant";
-  private static String USERS_ENTRY = "users";
   private final Logger logger = LoggerFactory.getLogger(UsersAPI.class);
 
   @Override
@@ -45,45 +45,81 @@ public class UsersAPI implements UsersResource {
 
   }
 
-  Consumer<Response> handlePreviousResponse(boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+  Consumer<Response> handlePreviousResponse(boolean requireOneResult, boolean requireOneOrMoreResults, boolean stopChainOnNoResults,
+      boolean previousFailure[], Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
     return (response) -> {
-        handleError(response, isSingleResult, asyncResultHandler);
+      if(!previousFailure[0]){
+        handleError(response, requireOneResult, requireOneOrMoreResults, stopChainOnNoResults, previousFailure, asyncResultHandler);
+      }
     };
   }
 
-  private void handleError(Response response, boolean isSingleResult, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
-    int statusCode = response.getCode();
-    boolean ok = Response.isSuccess(statusCode);
-    if(ok && !isSingleResult){
-        Integer totalRecords = response.getBody().getInteger("total_records");
-        if(totalRecords == null || totalRecords < 1) {
-          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-            GetUsersByIdByUseridResponse.withPlainNotFound("No record found for query '" + response.getEndpoint() + "'")));
-        } else if(totalRecords > 1) {
-          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-            GetUsersByIdByUseridResponse.withPlainBadRequest(("'" + response.getEndpoint() + "' returns multiple results"))));
-        }
+  private void handleError(Response response, boolean requireOneResult, boolean requireOneOrMoreResults, boolean stopChainOnNoResults,
+      boolean previousFailure[], Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
+
+    if(!notNull(response)){
+      //response is null or the json object within the response is null, meaning the previous
+      //call failed. set previousFailure flag to true so that dont send another error response to the client
+      if(!previousFailure[0]){
+        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+          GetUsersByIdByUseridResponse.withPlainInternalServerError("response is null from one of the services requested")));
+      }
+      previousFailure[0] = true;
     }
-    else if(!ok){
-      String message = "";
-      if(response.getError() != null){
-        statusCode = response.getError().getInteger("statusCode");
-        message = response.getError().encodePrettily();
+    else {
+      //check if the previous request failed
+      int statusCode = response.getCode();
+      boolean ok = Response.isSuccess(statusCode);
+      if(ok){
+          Integer totalRecords = response.getBody().getInteger("totalRecords");
+          if(totalRecords == null){
+            totalRecords = response.getBody().getInteger("total_records");
+          }
+          if((totalRecords == null || totalRecords < 1) && (requireOneResult || requireOneOrMoreResults)) {
+            logger.error("No record found for query '" + response.getEndpoint() + "'");
+            previousFailure[0] = true;
+            if(stopChainOnNoResults){
+              //the chained requests will not fire the next request if the response's error object of the previous request is not null
+              //so set the response's error object of the previous request to not null so that the calls that are to fire after this
+              //are not called
+              response.setError(new JsonObject());
+            }
+            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+              GetUsersByIdByUseridResponse.withPlainNotFound("No record found for query '" + response.getEndpoint() + "'")));
+          } else if(totalRecords > 1 && requireOneResult) {
+            logger.error("'" + response.getEndpoint() + "' returns multiple results");
+            previousFailure[0] = true;
+            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+              GetUsersByIdByUseridResponse.withPlainBadRequest(("'" + response.getEndpoint() + "' returns multiple results"))));
+          }
       }
-      else{
-        message = response.getException().getLocalizedMessage();
-      }
-      if(statusCode == 404){
-        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-          GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
-      }
-      else if(statusCode == 400){
-        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-          GetUsersByIdByUseridResponse.withPlainBadRequest(response.getError().encodePrettily())));
-      }
-      else{
-        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-          GetUsersByIdByUseridResponse.withPlainInternalServerError(message)));
+      else if(!ok){
+        String message = "";
+        if(response.getError() != null){
+          statusCode = response.getError().getInteger("statusCode");
+          message = response.getError().encodePrettily();
+        }
+        else{
+          message = response.getException().getLocalizedMessage();
+        }
+        if(statusCode == 404){
+          logger.error(response.getError().encodePrettily());
+          previousFailure[0] = true;
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainNotFound(response.getError().encodePrettily())));
+        }
+        else if(statusCode == 400){
+          logger.error(response.getError().encodePrettily());
+          previousFailure[0] = true;
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainBadRequest(response.getError().encodePrettily())));
+        }
+        else{
+          logger.error(message);
+          previousFailure[0] = true;
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersByIdByUseridResponse.withPlainInternalServerError(message)));
+        }
       }
     }
   }
@@ -99,24 +135,28 @@ public class UsersAPI implements UsersResource {
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
 
-    //TODO!!!!!!!! request fails, is returned, stop processing...
     boolean []aRequestHasFailed = new boolean[]{false};
     String tenant = okapiHeaders.get(OKAPI_TENANT_HEADER);
     String okapiURL = okapiHeaders.get(OKAPI_URL_HEADER);
+    okapiHeaders.remove(OKAPI_URL_HEADER);
+
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
 
     CompletableFuture<Response> []userIdResponse = new CompletableFuture[1];
     String userTemplate = "";
     String groupTemplate = "";
+    StringBuffer userUrl = new StringBuffer("/users");
     String mode[] = new String[1];
     if(userid != null) {
-      userIdResponse[0] = client.request("/users/" + userid, okapiHeaders);
+      userUrl.append("/").append(userid);
+      userIdResponse[0] = client.request(userUrl.toString(), okapiHeaders);
       userTemplate = "{username}";
       groupTemplate = "{patronGroup}";
       mode[0] = "id";
     }
     else if(username != null){
-      userIdResponse[0] = client.request("/users?query=username=" + username, okapiHeaders);
+      userUrl.append("/users?query=username=").append(username);
+      userIdResponse[0] = client.request(userUrl.toString(), okapiHeaders);
       userTemplate = "{users[0].username}";
       groupTemplate = "{users[0].patronGroup}";
       mode[0] = "username";
@@ -132,7 +172,7 @@ public class UsersAPI implements UsersResource {
         //call credentials once the /users?query=username={username} completes
         CompletableFuture<Response> credResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/authn/credentials/"+userTemplate, okapiHeaders, null,
-                handlePreviousResponse(true, asyncResultHandler)));
+                handlePreviousResponse(true, false, false, aRequestHasFailed, asyncResultHandler)));
         requestedIncludes[i] = credResponse;
         completedLookup.put("credentials", credResponse);
       }
@@ -140,14 +180,14 @@ public class UsersAPI implements UsersResource {
         //call perms once the /users?query=username={username} (same as creds) completes
         CompletableFuture<Response> permResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/perms/users/"+userTemplate, okapiHeaders, null,
-                handlePreviousResponse(true, asyncResultHandler)));
+                handlePreviousResponse(true, false,false, aRequestHasFailed, asyncResultHandler)));
         requestedIncludes[i] = permResponse;
         completedLookup.put("perms", permResponse);
       }
       else if(include.get(i).equals("groups")){
         CompletableFuture<Response> groupResponse = userIdResponse[0].thenCompose(
           client.chainedRequest("/groups/"+groupTemplate, okapiHeaders, null,
-            handlePreviousResponse(true, asyncResultHandler)));
+            handlePreviousResponse(true, false,false, aRequestHasFailed, asyncResultHandler)));
         requestedIncludes[i] = groupResponse;
         completedLookup.put("groups", groupResponse);
       }
@@ -156,14 +196,37 @@ public class UsersAPI implements UsersResource {
     CompletableFuture.allOf(requestedIncludes)
     .thenAccept((response) -> {
       try {
-        CompositeUser cu = null;
+
+        Response userResponse = userIdResponse[0].get();
+
+        if(!notNull(userResponse)){
+          if(mode[0].equals("id")){
+            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+              GetUsersByIdByUseridResponse.withPlainInternalServerError("Error when retrieving user info from: " + userUrl.toString())));
+          }else if(mode[0].equals("username")){
+            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+              GetUsersByUsernameByUsernameResponse.withPlainInternalServerError("Error when retrieving user info from: " + userUrl.toString())));
+          }
+          return;
+        }
+
+        CompositeUser cu = new CompositeUser();
+
         if(mode[0].equals("id")){
-          cu = processIdRes(requestedIncludes, completedLookup, userIdResponse);
+          cu.setUser((User)userIdResponse[0].get().convertToPojo(User.class));
         }
         else if(mode[0].equals("username")){
-          cu = processUserNameRes(requestedIncludes, completedLookup, userIdResponse);
+          cu.setUser((User)Response.convertToPojo(userIdResponse[0].get().getBody().getJsonArray("users").getJsonObject(0), User.class));
         }
-        CompletableFuture<Response> cf = completedLookup.get("groups");
+        CompletableFuture<Response> cf = completedLookup.get("credentials");
+        if(cf != null){
+          cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody().getJsonArray("credentials").getJsonObject(0), Credentials.class));
+        }
+        cf = completedLookup.get("perms");
+        if(cf != null){
+          cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody().getJsonArray("permissions").getJsonObject(0), Permissions.class));
+        }
+        cf = completedLookup.get("groups");
         if(cf != null){
           cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
         }
@@ -188,40 +251,8 @@ public class UsersAPI implements UsersResource {
     });
   }
 
-  private CompositeUser processIdRes(CompletableFuture<Response>[] requestedIncludes,
-      Map<String, CompletableFuture<Response>> completedLookup, CompletableFuture<Response> []userIdResponse)
-          throws InterruptedException, ExecutionException, Exception{
-    CompositeUser cu = new CompositeUser();
-    cu.setUser((User)userIdResponse[0].get().convertToPojo(User.class));
-    CompletableFuture<Response> cf = completedLookup.get("credentials");
-    if(cf != null){
-      cu.setCredentials((Credentials)cf.get().convertToPojo(Credentials.class) );
-    }
-    cf = completedLookup.get("perms");
-    if(cf != null){
-      cu.setPermissions((Permissions)cf.get().convertToPojo(Permissions.class) );
-    }
-    return cu;
-  }
-
-  private CompositeUser processUserNameRes(CompletableFuture<Response>[] requestedIncludes,
-      Map<String, CompletableFuture<Response>> completedLookup, CompletableFuture<Response> []userIdResponse)
-          throws InterruptedException, ExecutionException, Exception{
-    CompositeUser cu = new CompositeUser();
-    cu.setUser((User)Response.convertToPojo(userIdResponse[0].get().getBody().getJsonArray("users").getJsonObject(0), User.class));
-    CompletableFuture<Response> cf = completedLookup.get("credentials");
-    if(cf != null){
-      cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody().getJsonArray("credentials").getJsonObject(0), Credentials.class));
-    }
-    cf = completedLookup.get("perms");
-    if(cf != null){
-      cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody().getJsonArray("permissions").getJsonObject(0), Permissions.class));
-    }
-    return cu;
-  }
-
   @Override
-  public void getUsers(String query, String orderBy, Order order, int offset, int limit,
+  public void getUsers(String query, int offset, int limit,
       List<String> include, Map<String, String> okapiHeaders,
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
@@ -232,10 +263,16 @@ public class UsersAPI implements UsersResource {
     HttpModuleClient2 client = new HttpModuleClient2(okapiURL, tenant);
     okapiHeaders.remove(OKAPI_URL_HEADER);
     CompletableFuture<Response> []userIdResponse = new CompletableFuture[1];
-    userIdResponse[0] = client.request("/users?query="+query, okapiHeaders);
+
+    StringBuffer userUrl = new StringBuffer("/users");
+    if(query != null){
+      userUrl.append("?query=").append(query).append("&offset=").append(offset).append("&limit=").append(limit);
+    }
+    userIdResponse[0] = client.request(userUrl.toString(), okapiHeaders);
 
     int includeCount = include.size();
-    CompletableFuture<Response> []requestedIncludes = new CompletableFuture[includeCount+1];
+    ArrayList<CompletableFuture<Response>> requestedIncludes = new ArrayList<>();
+    //CompletableFuture<Response> []requestedIncludes = new CompletableFuture[includeCount+1];
     Map<String, CompletableFuture<Response>> completedLookup = new HashMap<>();
 
     for (int i = 0; i < includeCount; i++) {
@@ -244,74 +281,103 @@ public class UsersAPI implements UsersResource {
         //call credentials once the /users?query=username={username} completes
         CompletableFuture<Response> credResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/authn/credentials", okapiHeaders, new BuildCQL(null, "users[*].username", "username"),
-                handlePreviousResponse(true, asyncResultHandler)));
-        requestedIncludes[i] = credResponse;
+                handlePreviousResponse(false, true, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(credResponse);
         completedLookup.put("credentials", credResponse);
       }
       else if(include.get(i).equals("perms")){
         //call perms once the /users?query=username={username} (same as creds) completes
         CompletableFuture<Response> permResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/perms/users", okapiHeaders, new BuildCQL(null, "users[*].username", "username"),
-                handlePreviousResponse(true, asyncResultHandler)));
-        requestedIncludes[i] = permResponse;
+                handlePreviousResponse(false, true, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(permResponse);
         completedLookup.put("perms", permResponse);
       }
       else if(include.get(i).equals("groups")){
         CompletableFuture<Response> groupResponse = userIdResponse[0].thenCompose(
           client.chainedRequest("/groups", okapiHeaders, new BuildCQL(null, "users[*].patronGroup", "id"),
-            handlePreviousResponse(true, asyncResultHandler)));
-        requestedIncludes[i] = groupResponse;
+            handlePreviousResponse(false, true, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(groupResponse);
         completedLookup.put("groups", groupResponse);
       }
     }
-    requestedIncludes[includeCount] = userIdResponse[0];
-    CompletableFuture.allOf(requestedIncludes)
+    requestedIncludes.add(userIdResponse[0]);
+    CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
       try {
         CompositeUserListObject cu = new CompositeUserListObject();
-
         Response userResponse = userIdResponse[0].get();
-
+        if(!notNull(userResponse)){
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersResponse.withPlainInternalServerError("Error when retrieving user info from: " + userUrl.toString())));
+          return;
+        }
         Response composite = new Response();
         //map an array of users returned by /users into an array of compositeUser objects - "compositeUser": []
         //name each object in the array "users" -  "compositeUser": [ { "users": { ...
         composite.mapFrom(userResponse, "users[*]", "compositeUser", "users", true);
-        //join into the compositeUser array groups joining on id and patronGroup field values. assume only one group per user
-        //hence the usergroup[0] field to push into ../../groups otherwise (if many) leave out the [0] and pass in "usergroups"
-
+        if(composite.getBody().isEmpty()){
+          if(!aRequestHasFailed[0]){
+            asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+              GetUsersResponse.withJsonOK(cu)));
+          }
+          aRequestHasFailed[0] = true;
+          return;
+        }
         Response groupResponse = null;
         Response credsResponse = null;
         Response permsResponse = null;
         CompletableFuture<Response> cf = completedLookup.get("groups");
         if(cf != null){
           groupResponse = cf.get();
-          composite.joinOn("compositeUser[*].users.patronGroup", groupResponse, "usergroups[*].id", "usergroups[0]", "../../groups", false);
+          //check for errors
+          handleError(groupResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
+          if(!aRequestHasFailed[0]){
+            //join into the compositeUser array groups joining on id and patronGroup field values. assume only one group per user
+            //hence the usergroup[0] field to push into ../../groups otherwise (if many) leave out the [0] and pass in "usergroups"
+            composite.joinOn("compositeUser[*].users.patronGroup", groupResponse, "usergroups[*].id", "usergroups[0]", "../../groups", false);
+          }
         }
         cf = completedLookup.get("credentials");
         if(cf != null){
           credsResponse = cf.get();
-          composite.joinOn("compositeUser[*].users.username", credsResponse, "credentials[*].username", "credentials", "../../credentials", false);
+          //check for errors
+          handleError(credsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
+          if(!aRequestHasFailed[0]){
+            composite.joinOn("compositeUser[*].users.username", credsResponse, "credentials[*].username", "credentials[0]", "../../credentials", false);
+          }
         }
         cf = completedLookup.get("perms");
         if(cf != null){
           permsResponse = cf.get();
-          composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionUsers[*].username", "permissionUsers", "../../permissions", false);
+          //check for errors
+          handleError(permsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
+          if(!aRequestHasFailed[0]){
+            composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionUsers[*].username", "permissionUsers[0]", "../../permissions", false);
+          }
         }
         client.closeClient();
-
         @SuppressWarnings("unchecked")
         List<CompositeUser> cuol = (List<CompositeUser>)Response.convertToPojo(composite.getBody().getJsonArray("compositeUser"), CompositeUser.class);
         cu.setCompositeUsers(cuol);
-        asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
-          GetUsersResponse.withJsonOK(cu)));
+        if(!aRequestHasFailed[0]){
+          asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
+            GetUsersResponse.withJsonOK(cu)));
+        }
       } catch (Exception e) {
+        if(!aRequestHasFailed[0]){
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
             GetUsersResponse.withPlainInternalServerError(e.getLocalizedMessage())));
+        }
         logger.error(e.getMessage(), e);
       }
     });
-
-
   }
 
+  private boolean notNull(Response r){
+    if(r != null){
+      return true;
+    }
+    return false;
+  }
 }
