@@ -58,8 +58,8 @@ public class UsersAPI implements UsersResource {
       boolean previousFailure[], Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler){
 
     if(!notNull(response)){
-      //response is null or the json object within the response is null, meaning the previous
-      //call failed. set previousFailure flag to true so that dont send another error response to the client
+      //response is null, meaning the previous call failed.
+      //set previousFailure flag to true so that we don't send another error response to the client
       if(!previousFailure[0]){
         asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
           GetUsersByIdByUseridResponse.withPlainInternalServerError("response is null from one of the services requested")));
@@ -75,7 +75,7 @@ public class UsersAPI implements UsersResource {
           if(totalRecords == null){
             totalRecords = response.getBody().getInteger("total_records");
           }
-          if((totalRecords == null || totalRecords < 1) && (requireOneResult || requireOneOrMoreResults)) {
+          if(((totalRecords != null && totalRecords < 1) || response.getBody().isEmpty()) && (requireOneResult || requireOneOrMoreResults)) {
             logger.error("No record found for query '" + response.getEndpoint() + "'");
             previousFailure[0] = true;
             if(stopChainOnNoResults){
@@ -86,7 +86,7 @@ public class UsersAPI implements UsersResource {
             }
             asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
               GetUsersByIdByUseridResponse.withPlainNotFound("No record found for query '" + response.getEndpoint() + "'")));
-          } else if(totalRecords > 1 && requireOneResult) {
+          } else if(totalRecords != null && totalRecords > 1 && requireOneResult) {
             logger.error("'" + response.getEndpoint() + "' returns multiple results");
             previousFailure[0] = true;
             asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
@@ -155,7 +155,7 @@ public class UsersAPI implements UsersResource {
       mode[0] = "id";
     }
     else if(username != null){
-      userUrl.append("/users?query=username=").append(username);
+      userUrl.append("?query=username=").append(username);
       userIdResponse[0] = client.request(userUrl.toString(), okapiHeaders);
       userTemplate = "{users[0].username}";
       groupTemplate = "{users[0].patronGroup}";
@@ -163,7 +163,7 @@ public class UsersAPI implements UsersResource {
     }
 
     int includeCount = include.size();
-    CompletableFuture<Response> []requestedIncludes = new CompletableFuture[includeCount+1];
+    ArrayList<CompletableFuture<Response>> requestedIncludes = new ArrayList<>();
     Map<String, CompletableFuture<Response>> completedLookup = new HashMap<>();
 
     for (int i = 0; i < includeCount; i++) {
@@ -172,28 +172,28 @@ public class UsersAPI implements UsersResource {
         //call credentials once the /users?query=username={username} completes
         CompletableFuture<Response> credResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/authn/credentials/"+userTemplate, okapiHeaders, null,
-                handlePreviousResponse(true, false, false, aRequestHasFailed, asyncResultHandler)));
-        requestedIncludes[i] = credResponse;
+                handlePreviousResponse(true, false, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(credResponse);
         completedLookup.put("credentials", credResponse);
       }
       else if(include.get(i).equals("perms")){
         //call perms once the /users?query=username={username} (same as creds) completes
         CompletableFuture<Response> permResponse = userIdResponse[0].thenCompose(
               client.chainedRequest("/perms/users/"+userTemplate, okapiHeaders, null,
-                handlePreviousResponse(true, false,false, aRequestHasFailed, asyncResultHandler)));
-        requestedIncludes[i] = permResponse;
+                handlePreviousResponse(true, false, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(permResponse);
         completedLookup.put("perms", permResponse);
       }
       else if(include.get(i).equals("groups")){
         CompletableFuture<Response> groupResponse = userIdResponse[0].thenCompose(
           client.chainedRequest("/groups/"+groupTemplate, okapiHeaders, null,
-            handlePreviousResponse(true, false,false, aRequestHasFailed, asyncResultHandler)));
-        requestedIncludes[i] = groupResponse;
+            handlePreviousResponse(true, false, true, aRequestHasFailed, asyncResultHandler)));
+        requestedIncludes.add(groupResponse);
         completedLookup.put("groups", groupResponse);
       }
     }
-    requestedIncludes[includeCount] = userIdResponse[0];
-    CompletableFuture.allOf(requestedIncludes)
+    requestedIncludes.add(userIdResponse[0]);
+    CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
       try {
 
@@ -213,21 +213,21 @@ public class UsersAPI implements UsersResource {
         CompositeUser cu = new CompositeUser();
 
         if(mode[0].equals("id")){
-          cu.setUser((User)userIdResponse[0].get().convertToPojo(User.class));
+          cu.setUser((User)userResponse.convertToPojo(User.class));
         }
         else if(mode[0].equals("username")){
-          cu.setUser((User)Response.convertToPojo(userIdResponse[0].get().getBody().getJsonArray("users").getJsonObject(0), User.class));
+          cu.setUser((User)Response.convertToPojo(userResponse.getBody().getJsonArray("users").getJsonObject(0), User.class));
         }
         CompletableFuture<Response> cf = completedLookup.get("credentials");
-        if(cf != null){
-          cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody().getJsonArray("credentials").getJsonObject(0), Credentials.class));
+        if(cf != null && cf.get().getBody() != null){
+          cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody(), Credentials.class));
         }
         cf = completedLookup.get("perms");
-        if(cf != null){
-          cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody().getJsonArray("permissions").getJsonObject(0), Permissions.class));
+        if(cf != null && cf.get().getBody() != null){
+          cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
         }
         cf = completedLookup.get("groups");
-        if(cf != null){
+        if(cf != null && cf.get().getBody() != null){
           cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
         }
         client.closeClient();
