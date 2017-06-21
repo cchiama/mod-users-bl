@@ -46,7 +46,7 @@ public class UsersAPI implements UsersResource {
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
 
-    run(null, username, include, okapiHeaders, asyncResultHandler, vertxContext);
+    run(null, username, expandPerms, include, okapiHeaders, asyncResultHandler, vertxContext);
 
   }
 
@@ -147,10 +147,10 @@ public class UsersAPI implements UsersResource {
   public void getUsersByIdByUserid(String userid, List<String> include, Boolean expandPerms,
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
-    run(userid, null, include, okapiHeaders, asyncResultHandler, vertxContext);
+    run(userid, null, expandPerms, include, okapiHeaders, asyncResultHandler, vertxContext);
   }
 
-  private void run(String userid, String username, List<String> include,
+  private void run(String userid, String username, Boolean expandPerms, List<String> include,
       Map<String, String> okapiHeaders, Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler,
       Context vertxContext) throws Exception {
 
@@ -213,6 +213,15 @@ public class UsersAPI implements UsersResource {
         completedLookup.put("groups", groupResponse);
       }
     }
+    if(expandPerms != null && expandPerms){
+      CompletableFuture<Response> expandPermsResponse = userIdResponse[0].thenCompose(
+        client.chainedRequest("/perms/users/"+userTemplate+"/permissions?expanded=true&full=true", okapiHeaders, true, null,
+          handlePreviousResponse(true, false, true, aRequestHasFailed, asyncResultHandler)));
+      requestedIncludes.add(expandPermsResponse);
+      completedLookup.put("expanded", expandPermsResponse);
+    }
+
+
     requestedIncludes.add(userIdResponse[0]);
     CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
@@ -249,14 +258,30 @@ public class UsersAPI implements UsersResource {
         if(cf != null && cf.get().getBody() != null){
           cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody(), Credentials.class));
         }
-        cf = completedLookup.get("perms");
-        if(cf != null && cf.get().getBody() != null){
-          cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
-        }
+
         cf = completedLookup.get("groups");
         if(cf != null && cf.get().getBody() != null){
           cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
         }
+
+        cf = completedLookup.get("perms");
+        if(cf != null && cf.get().getBody() != null){
+          cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
+        }
+        cf = completedLookup.get("expanded");
+        if(cf != null && cf.get().getBody() != null){
+          //data coming in from the service isnt returned as required by the composite user schema
+          JsonObject j = new JsonObject();
+          j.put("permissions", cf.get().getBody().getJsonArray("permissionNames"));
+          cu.setPermissions((Permissions)Response.convertToPojo(j, Permissions.class));
+        }
+        else {
+          cf = completedLookup.get("perms");
+          if(cf != null && cf.get().getBody() != null){
+            cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
+          }
+        }
+
         client.closeClient();
         if(mode[0].equals("id")){
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
