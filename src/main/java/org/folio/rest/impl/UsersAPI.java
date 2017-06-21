@@ -282,7 +282,7 @@ public class UsersAPI implements UsersResource {
 
   @Override
   public void getUsers(String query, int offset, int limit,
-      Boolean expandPerms, List<String> include, Map<String, String> okapiHeaders,
+      List<String> include, Map<String, String> okapiHeaders,
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
 
@@ -334,6 +334,15 @@ public class UsersAPI implements UsersResource {
         completedLookup.put("groups", groupResponse);
       }
     }
+
+/*    if(expandPerms != null && expandPerms){
+      CompletableFuture<Response> expandPermsResponse = userIdResponse[0].thenCompose(
+        client.chainedRequest("/perms/users/{users[0].username}/permissions?expanded=true&full=true", okapiHeaders, true, null,
+          handlePreviousResponse(false, true, true, aRequestHasFailed, asyncResultHandler)));
+      requestedIncludes.add(expandPermsResponse);
+      completedLookup.put("expanded", expandPermsResponse);
+    }*/
+
     requestedIncludes.add(userIdResponse[0]);
     CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
@@ -383,6 +392,15 @@ public class UsersAPI implements UsersResource {
             composite.joinOn("compositeUser[*].users.username", credsResponse, "credentials[*].username", "../", "../../credentials", false);
           }
         }
+/*        cf = completedLookup.get("expanded");
+        if(cf != null){
+          permsResponse = cf.get();
+          handleError(permsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
+          if(!aRequestHasFailed[0] && permsResponse.getBody() != null){
+            composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionNames[*].username", "../permissions", "../../permissions.permissions", false);
+          }
+        }*/
+        //else {
         cf = completedLookup.get("perms");
         if(cf != null){
           permsResponse = cf.get();
@@ -392,6 +410,7 @@ public class UsersAPI implements UsersResource {
             composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionUsers[*].username", "../permissions", "../../permissions.permissions", false);
           }
         }
+        //}
         client.closeClient();
         @SuppressWarnings("unchecked")
         List<CompositeUser> cuol = (List<CompositeUser>)Response.convertToPojo(composite.getBody().getJsonArray("compositeUser"), CompositeUser.class);
