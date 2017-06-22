@@ -582,7 +582,8 @@ public class UsersAPI implements UsersResource {
             Response credsResponse = cf.get();
             handleError(credsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
             if(!aRequestHasFailed[0] && credsResponse.getBody() != null){
-              cu.setCredentials((Credentials)Response.convertToPojo(credsResponse.getBody(), Credentials.class));
+              cu.setCredentials((Credentials)Response.convertToPojo(
+                credsResponse.getBody().getJsonArray("credentials").getJsonObject(0), Credentials.class));
             }
           }
           cf = completedLookup.get("expanded");
@@ -596,19 +597,23 @@ public class UsersAPI implements UsersResource {
               cu.setPermissions((Permissions) Response.convertToPojo(j, Permissions.class));
             }
           }
-          else {
-            cf = completedLookup.get("perms");
-            if(cf != null){
-              Response permsResponse = cf.get();
-              handleError(permsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
-              if(!aRequestHasFailed[0] && permsResponse.getBody() != null){
+          cf = completedLookup.get("perms");
+          if(cf != null && cf.get().getBody() != null){
+            Response permsResponse = cf.get();
+            handleError(permsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
+            if(!aRequestHasFailed[0]){
+              Permissions p = cu.getPermissions();
+              if(p != null){
+                //expanded permissions requested and the array of permissions has been populated
+                //add the username
+                p.setUsername(permsResponse.getBody().getJsonArray("permissionUsers").getJsonObject(0).getString("username"));
+              } else{
                 //data coming in from the service isnt returned as required by the composite user schema
-                JsonObject j = new JsonObject();
-                j.put("permissions", permsResponse.getBody().getJsonArray("permissionUsers"));
-                cu.setPermissions((Permissions) Response.convertToPojo(j, Permissions.class));
-              }
+                JsonObject j = permsResponse.getBody().getJsonArray("permissionUsers").getJsonObject(0);
+                cu.setPermissions((Permissions) Response.convertToPojo(j, Permissions.class));              }
             }
           }
+
           client.closeClient();
           if(!aRequestHasFailed[0]){
             asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
