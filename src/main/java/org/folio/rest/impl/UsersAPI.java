@@ -1,6 +1,7 @@
 package org.folio.rest.impl;
 
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -220,8 +221,6 @@ public class UsersAPI implements UsersResource {
       requestedIncludes.add(expandPermsResponse);
       completedLookup.put("expanded", expandPermsResponse);
     }
-
-
     requestedIncludes.add(userIdResponse[0]);
     CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
@@ -243,9 +242,7 @@ public class UsersAPI implements UsersResource {
             return;
           }
         }
-
         CompositeUser cu = new CompositeUser();
-
         if(mode[0].equals("id")){
           cu.setUser((User)userResponse.convertToPojo(User.class));
         }
@@ -258,12 +255,10 @@ public class UsersAPI implements UsersResource {
         if(cf != null && cf.get().getBody() != null){
           cu.setCredentials((Credentials)Response.convertToPojo(cf.get().getBody(), Credentials.class));
         }
-
         cf = completedLookup.get("groups");
         if(cf != null && cf.get().getBody() != null){
           cu.setPatronGroup((PatronGroup)cf.get().convertToPojo(PatronGroup.class) );
         }
-
         cf = completedLookup.get("perms");
         if(cf != null && cf.get().getBody() != null){
           cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
@@ -275,13 +270,17 @@ public class UsersAPI implements UsersResource {
           j.put("permissions", cf.get().getBody().getJsonArray("permissionNames"));
           cu.setPermissions((Permissions)Response.convertToPojo(j, Permissions.class));
         }
-        else {
-          cf = completedLookup.get("perms");
-          if(cf != null && cf.get().getBody() != null){
+        cf = completedLookup.get("perms");
+        if(cf != null && cf.get().getBody() != null){
+          Permissions p = cu.getPermissions();
+          if(p != null){
+            //expanded permissions requested and the array of permissions has been populated
+            //add the username
+            p.setUsername(cf.get().getBody().getString("username"));
+          } else{
             cu.setPermissions((Permissions)Response.convertToPojo(cf.get().getBody(), Permissions.class));
           }
         }
-
         client.closeClient();
         if(mode[0].equals("id")){
           asyncResultHandler.handle(io.vertx.core.Future.succeededFuture(
@@ -359,15 +358,6 @@ public class UsersAPI implements UsersResource {
         completedLookup.put("groups", groupResponse);
       }
     }
-
-/*    if(expandPerms != null && expandPerms){
-      CompletableFuture<Response> expandPermsResponse = userIdResponse[0].thenCompose(
-        client.chainedRequest("/perms/users/{users[0].username}/permissions?expanded=true&full=true", okapiHeaders, true, null,
-          handlePreviousResponse(false, true, true, aRequestHasFailed, asyncResultHandler)));
-      requestedIncludes.add(expandPermsResponse);
-      completedLookup.put("expanded", expandPermsResponse);
-    }*/
-
     requestedIncludes.add(userIdResponse[0]);
     CompletableFuture.allOf(requestedIncludes.toArray(new CompletableFuture[requestedIncludes.size()]))
     .thenAccept((response) -> {
@@ -380,7 +370,6 @@ public class UsersAPI implements UsersResource {
         if(aRequestHasFailed[0]){
           return;
         }
-
         CompositeUserListObject cu = new CompositeUserListObject();
         Response composite = new Response();
         //map an array of users returned by /users into an array of compositeUser objects - "compositeUser": []
@@ -417,15 +406,6 @@ public class UsersAPI implements UsersResource {
             composite.joinOn("compositeUser[*].users.username", credsResponse, "credentials[*].username", "../", "../../credentials", false);
           }
         }
-/*        cf = completedLookup.get("expanded");
-        if(cf != null){
-          permsResponse = cf.get();
-          handleError(permsResponse, false, true, false, aRequestHasFailed, asyncResultHandler);
-          if(!aRequestHasFailed[0] && permsResponse.getBody() != null){
-            composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionNames[*].username", "../permissions", "../../permissions.permissions", false);
-          }
-        }*/
-        //else {
         cf = completedLookup.get("perms");
         if(cf != null){
           permsResponse = cf.get();
@@ -435,7 +415,6 @@ public class UsersAPI implements UsersResource {
             composite.joinOn("compositeUser[*].users.username", permsResponse, "permissionUsers[*].username", "../permissions", "../../permissions.permissions", false);
           }
         }
-        //}
         client.closeClient();
         @SuppressWarnings("unchecked")
         List<CompositeUser> cuol = (List<CompositeUser>)Response.convertToPojo(composite.getBody().getJsonArray("compositeUser"), CompositeUser.class);
@@ -468,12 +447,32 @@ public class UsersAPI implements UsersResource {
     return true;
   }
 
+  private String getUsername(String token) {
+    JsonObject payload = parseTokenPayload(token);
+    if(payload == null) { return null; }
+    String username = payload.getString("sub");
+    return username;
+  }
+
+  private JsonObject parseTokenPayload(String token) {
+    String[] tokenParts = token.split("\\.");
+    if(tokenParts.length == 3) {
+      String encodedPayload = tokenParts[1];
+      byte[] decodedJsonBytes = Base64.getDecoder().decode(encodedPayload);
+      String decodedJson = new String(decodedJsonBytes);
+      return new JsonObject(decodedJson);
+    } else {
+      return null;
+    }
+  }
+
   @Override
   public void getUsersSelf(List<String> include, Boolean expandPerms, Map<String, String> okapiHeaders,
       Handler<AsyncResult<javax.ws.rs.core.Response>> asyncResultHandler, Context vertxContext)
       throws Exception {
-    // TODO Auto-generated method stub
-
+    String token = okapiHeaders.get(OKAPI_TOKEN_HEADER);
+    String username = getUsername(token);
+    run(null, username, expandPerms, include, okapiHeaders, asyncResultHandler, vertxContext);
   }
 
   @Override
