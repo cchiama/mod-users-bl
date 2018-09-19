@@ -1,4 +1,4 @@
-## 4.0.3 2018-08-31
+## 4.1.0 UNRELEASED
  * postBlUsersForgottenPassword & postBlUsersForgottenUsername implementation
 
 ## 4.0.2 2018-08-20
